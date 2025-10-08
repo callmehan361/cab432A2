@@ -1,20 +1,23 @@
 [
   {
-    "id": "0ffc48d3-9401-4748-9bf3-dff1556594bf",
+    "id": "123e4567-e89b-12d3-a456-426614174000",
     "user": "testuser",
     "status": "completed",
-    "output": "outputs/0ffc48d3-9401-4748-9bf3-dff1556594bf.mp4"
+    "inputKey": "uploads/123e4567-e89b-12d3-a456-426614174000-testvideo.mp4",
+    "outputKey": "outputs/123e4567-e89b-12d3-a456-426614174000.mp4"
   },
   {
-    "id": "f56e0065-8907-4675-9d80-c16323fd564b",
+    "id": "789abcde-f012-3456-7890-abcdef123456",
     "user": "testuser",
-    "status": "completed",
-    "output": "outputs/f56e0065-8907-4675-9d80-c16323fd564b.mp4"
+    "status": "processing",
+    "inputKey": "uploads/789abcde-f012-3456-7890-abcdef123456-anothervideo.mp4",
+    "outputKey": null
   },
   {
-    "id": "c704d613-c75d-47d8-9f02-dc68475fadd2",
-    "user": "testuser",
-    "status": "completed",
-    "output": "outputs/c704d613-c75d-47d8-9f02-dc68475fadd2.mp4"
+    "id": "abcdef12-3456-7890-abcd-ef1234567890",
+    "user": "testuser2",
+    "status": "failed",
+    "inputKey": "uploads/abcdef12-3456-7890-abcd-ef1234567890-failedvideo.mp4",
+    "outputKey": null
   }
 ]

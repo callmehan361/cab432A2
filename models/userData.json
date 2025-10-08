@@ -1,6 +1,20 @@
 [
   {
     "username": "testuser",
-    "password": "$2b$10$AtfxjISxalUi44m6LVDn/e697Crd/y.sUmKPHEbjLjyrEokrzZvpK"
+    "email": "testuser@qut.edu.au",
+    "password": "MyPassword123",
+    "verified": true
+  },
+  {
+    "username": "testuser2",
+    "email": "testuser2@qut.edu.au",
+    "password": "AnotherPass456",
+    "verified": false
+  },
+  {
+    "username": "testuser3",
+    "email": "testuser3@qut.edu.au",
+    "password": "TestPass789",
+    "verified": true
   }
 ]
