@@ -1,61 +1,119 @@
-const express = require("express");
-const multer = require("multer");
-const ffmpeg = require("fluent-ffmpeg");
-const ffmpegPath = require("ffmpeg-static");
-const { v4: uuidv4 } = require("uuid");
-const fs = require("fs");
-const path = require("path");
-const authMiddleware = require("../middleware/authMiddleware");
+import express from "express";
+import AWS from "aws-sdk";
+import multer from "multer";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
+import fs from "fs";
+import { v4 as uuidv4 } from "uuid";
 
-ffmpeg.setFfmpegPath(ffmpegPath);
 const router = express.Router();
-const jobsFile = path.join(__dirname, "../models/jobs.json");
+ffmpeg.setFfmpegPath(ffmpegPath);
 
-// File upload storage
-const storage = multer.diskStorage({
-  destination: "uploads/",
-  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
+const s3 = new AWS.S3({ region: process.env.AWS_REGION });
+const dynamoDB = new AWS.DynamoDB.DocumentClient({ region: process.env.AWS_REGION });
+
+const upload = multer({ dest: "uploads/" });
+
+// UPLOAD + TRANSCODE
+router.post("/upload", upload.single("video"), async (req, res) => {
+  try {
+    const videoId = uuidv4();
+    const filePath = req.file.path;
+    const fileName = req.file.originalname;
+    const s3OriginalKey = `original/${videoId}_${fileName}`;
+    const s3TranscodedKey = `transcoded/${videoId}_transcoded.mp4`;
+
+    // 1️⃣ Upload original to S3
+    const fileData = fs.readFileSync(filePath);
+    await s3.upload({
+      Bucket: process.env.S3_BUCKET,
+      Key: s3OriginalKey,
+      Body: fileData
+    }).promise();
+
+    // 2️⃣ Transcode with ffmpeg
+    const outputPath = `uploads/${videoId}_transcoded.mp4`;
+    ffmpeg(filePath)
+      .output(outputPath)
+      .videoCodec("libx264")
+      .on("end", async () => {
+        const transcodedData = fs.readFileSync(outputPath);
+
+        // 3️⃣ Upload transcoded to S3
+        await s3.upload({
+          Bucket: process.env.S3_BUCKET,
+          Key: s3TranscodedKey,
+          Body: transcodedData
+        }).promise();
+
+        // 4️⃣ Store metadata in DynamoDB
+        await dynamoDB.put({
+          TableName: process.env.DYNAMO_TABLE,
+          Item: {
+            videoId,
+            originalName: fileName,
+            transcodedKey: s3TranscodedKey,
+            uploadedAt: new Date().toISOString()
+          }
+        }).promise();
+
+        // 5️⃣ Clean up local files
+        fs.unlinkSync(filePath);
+        fs.unlinkSync(outputPath);
+
+        res.json({
+          message: "✅ Transcoding complete and uploaded to S3",
+          videoId
+        });
+      })
+      .on("error", (err) => {
+        console.error("FFmpeg error:", err);
+        res.status(500).json({ error: "Transcoding failed" });
+      })
+      .run();
+  } catch (err) {
+    console.error("Upload error:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
-const upload = multer({ storage });
 
-// Upload + Transcode
-router.post("/upload", authMiddleware, upload.single("video"), (req, res) => {
-  if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+// GET METADATA
+router.get("/metadata/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await dynamoDB.get({
+      TableName: process.env.DYNAMO_TABLE,
+      Key: { videoId: id }
+    }).promise();
 
-  const jobId = uuidv4();
-  const outputFile = `outputs/${jobId}.mp4`;
-
-  // Store job metadata
-  const jobs = JSON.parse(fs.readFileSync(jobsFile, "utf-8"));
-  jobs.push({ id: jobId, user: req.user.username, status: "processing" });
-  fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
-
-  // CPU-intensive transcoding
-  ffmpeg(req.file.path)
-    .outputOptions(["-preset veryslow", "-crf 28"]) // heavy CPU usage
-    .output(outputFile)
-    .on("end", () => {
-      const jobs = JSON.parse(fs.readFileSync(jobsFile, "utf-8"));
-      const job = jobs.find(j => j.id === jobId);
-      job.status = "completed";
-      job.output = outputFile;
-      fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
-    })
-    .on("error", (err) => {
-      const jobs = JSON.parse(fs.readFileSync(jobsFile, "utf-8"));
-      const job = jobs.find(j => j.id === jobId);
-      job.status = "failed";
-      fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
-    })
-    .run();
-
-  res.json({ message: "Transcoding started", jobId });
+    if (!result.Item) return res.status(404).json({ message: "Not found" });
+    res.json(result.Item);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Job status
-router.get("/status/:id", authMiddleware, (req, res) => {
-  const jobs = JSON.parse(fs.readFileSync(jobsFile, "utf-8"));
-  const job = jobs.find(j => j.id === req.params.id);
-  if (!job) return res.status(404).json({ message: "Job not found" });
-  res.json(job);
-}); 
+// GET PRE-SIGNED URL (for download)
+router.get("/download/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await dynamoDB.get({
+      TableName: process.env.DYNAMO_TABLE,
+      Key: { videoId: id }
+    }).promise();
+
+    if (!result.Item) return res.status(404).json({ message: "Metadata not found" });
+
+    const signedUrl = s3.getSignedUrl("getObject", {
+      Bucket: process.env.S3_BUCKET,
+      Key: result.Item.transcodedKey,
+      Expires: 3600
+    });
+
+    res.json({ downloadUrl: signedUrl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+export default router;
