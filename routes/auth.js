@@ -1,13 +1,11 @@
 const express = require('express');
-const AWS = require('aws-sdk');
-const { AuthenticationDetails, CognitoUser, CognitoUserPool } = require('amazon-cognito-identity-js');
+const { CognitoIdentityProviderClient, SignUpCommand, ConfirmSignUpCommand, InitiateAuthCommand } = require('@aws-sdk/client-cognito-identity-provider');
 
 const router = express.Router();
 
-// Configure Cognito
-const userPool = new CognitoUserPool({
-  UserPoolId: process.env.COGNITO_USER_POOL_ID,
-  ClientId: process.env.COGNITO_CLIENT_ID
+// Configure Cognito client
+const cognitoClient = new CognitoIdentityProviderClient({
+  region: process.env.AWS_REGION
 });
 
 // Register user
@@ -17,21 +15,15 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ message: 'Username, email, and password are required' });
   }
 
-  const attributeList = [
-    new AWS.CognitoIdentityServiceProvider.CognitoUserAttribute({
-      Name: 'email',
-      Value: email
-    })
-  ];
-
   try {
     console.log(`Registering user ${username} with email ${email}`);
-    await new Promise((resolve, reject) => {
-      userPool.signUp(username, password, attributeList, null, (err, result) => {
-        if (err) return reject(err);
-        resolve(result);
-      });
-    });
+    await cognitoClient.send(new SignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined,
+      Username: username,
+      Password: password,
+      UserAttributes: [{ Name: 'email', Value: email }]
+    }));
     res.json({ message: 'User registered, confirmation code sent to email' });
   } catch (err) {
     console.error('Cognito register error:', err);
@@ -46,19 +38,14 @@ router.post('/confirm', async (req, res) => {
     return res.status(400).json({ message: 'Username and confirmation code are required' });
   }
 
-  const cognitoUser = new CognitoUser({
-    Username: username,
-    Pool: userPool
-  });
-
   try {
     console.log(`Confirming email for user ${username}`);
-    await new Promise((resolve, reject) => {
-      cognitoUser.confirmRegistration(code, true, (err, result) => {
-        if (err) return reject(err);
-        resolve(result);
-      });
-    });
+    await cognitoClient.send(new ConfirmSignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined,
+      Username: username,
+      ConfirmationCode: code
+    }));
     res.json({ message: 'Email confirmed successfully' });
   } catch (err) {
     console.error('Cognito confirm error:', err);
@@ -73,28 +60,22 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ message: 'Username and password are required' });
   }
 
-  const authenticationDetails = new AuthenticationDetails({
-    Username: username,
-    Password: password
-  });
-  const cognitoUser = new CognitoUser({
-    Username: username,
-    Pool: userPool
-  });
-
   try {
     console.log(`Logging in user ${username}`);
-    const result = await new Promise((resolve, reject) => {
-      cognitoUser.authenticateUser(authenticationDetails, {
-        onSuccess: (session) => resolve(session),
-        onFailure: (err) => reject(err)
-      });
-    });
+    const result = await cognitoClient.send(new InitiateAuthCommand({
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined,
+      AuthParameters: {
+        USERNAME: username,
+        PASSWORD: password
+      }
+    }));
     res.json({
       message: 'Login successful',
-      idToken: result.getIdToken().getJwtToken(),
-      accessToken: result.getAccessToken().getJwtToken(),
-      refreshToken: result.getRefreshToken().getToken()
+      idToken: result.AuthenticationResult.IdToken,
+      accessToken: result.AuthenticationResult.AccessToken,
+      refreshToken: result.AuthenticationResult.RefreshToken
     });
   } catch (err) {
     console.error('Cognito login error:', err);
