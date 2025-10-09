@@ -25,7 +25,13 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({
-  storage,
+  storage: multerS3({
+    s3: s3Client,
+    bucket: process.env.S3_BUCKET,
+    metadata: (req, file, cb) => cb(null, { fieldName: file.fieldname }),
+    key: (req, file, cb) =>  cb(null, `uploads/${Date.now()}-${file.originalname}`)
+  }),
+
   fileFilter: (req, file, cb) => {
     //const allowedTypes = ['audio/mp4','video/mp4', 'video/mpeg', 'video/quicktime', 'video/mov'];
     const allowedTypes = ['video/', 'audio/'];
@@ -78,7 +84,7 @@ async function updateJobStatus(jobId, status, outputKey = null) {
 router.post('/upload', authMiddleware, upload.single("video"), async (req, res) => {
 
   console.log(req.file);
-  
+
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
   const jobId = uuidv4();
