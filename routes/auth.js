@@ -53,10 +53,22 @@ router.post('/confirm', async (req, res) => {
   }
 });
 
+const clientSecret = "1lj1pnnm7p718qbr48kd4ehksp5f9jps6u381p7b6ok6k6vrrsua";
+const clientId = "1jhh3ii265m4l4cuvh98vd744n";
+
+function SecretHash(clientId, clientSecret, username){
+  const hasher = crypto.createHmac('SHA256', clientSecret);
+  hasher.update('${username}${clientId}');
+  return hasher.digest('base64');
+}
+
 // Login user
 router.post('/login', async (req, res) => {
+  console.log('started 1');
   const { username, password } = req.body;
+  console.log('started 2');
   if (!username || !password) {
+    console.log('started 3');
     return res.status(400).json({ message: 'Username and password are required' });
   }
 
@@ -65,12 +77,13 @@ router.post('/login', async (req, res) => {
     const result = await cognitoClient.send(new InitiateAuthCommand({
       AuthFlow: 'USER_PASSWORD_AUTH',
       ClientId: process.env.COGNITO_CLIENT_ID,
-      SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined,
       AuthParameters: {
         USERNAME: username,
-        PASSWORD: password
+        PASSWORD: password,
+        SecretHash: SecretHash(process.env.COGNITO_CLIENT_ID, process.env.COGNITO_CLIENT_SECRET, username)
       }
     }));
+    
     res.json({
       message: 'Login successful',
       idToken: result.AuthenticationResult.IdToken,
