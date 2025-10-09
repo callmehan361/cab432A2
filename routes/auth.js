@@ -1,4 +1,4 @@
-const express = require('express');
+/*const express = require('express');
 const { CognitoIdentityProviderClient, SignUpCommand, ConfirmSignUpCommand, InitiateAuthCommand } = require('@aws-sdk/client-cognito-identity-provider');
 
 const crypto = require('crypto');
@@ -97,6 +97,194 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('Cognito login error:', err);
     res.status(401).json({ message: err.message || 'Login failed' });
+  }
+});
+
+module.exports = router;
+*/
+
+const express = require('express');
+const { 
+  CognitoIdentityProviderClient, 
+  SignUpCommand, 
+  ConfirmSignUpCommand, 
+  InitiateAuthCommand,
+  AssociateSoftwareTokenCommand,
+  VerifySoftwareTokenCommand,
+  RespondToAuthChallengeCommand
+} = require('@aws-sdk/client-cognito-identity-provider');
+
+const crypto = require('crypto');
+const router = express.Router();
+
+// Configure Cognito client
+const cognitoClient = new CognitoIdentityProviderClient({
+  region: process.env.AWS_REGION
+});
+
+// Utility to generate secret hash
+function generateSecretHash(username) {
+  if (!process.env.COGNITO_CLIENT_SECRET) return undefined;
+  return crypto.createHmac('sha256', process.env.COGNITO_CLIENT_SECRET)
+    .update(username + process.env.COGNITO_CLIENT_ID)
+    .digest('base64');
+}
+
+// ---------------- REGISTER ----------------
+router.post('/register', async (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !email || !password) {
+    return res.status(400).json({ message: 'Username, email, and password are required' });
+  }
+
+  try {
+    console.log(`Registering user ${username} with email ${email}`);
+    await cognitoClient.send(new SignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      SecretHash: generateSecretHash(username),
+      Username: username,
+      Password: password,
+      UserAttributes: [{ Name: 'email', Value: email }]
+    }));
+    res.json({ message: 'User registered, confirmation code sent to email' });
+  } catch (err) {
+    console.error('Cognito register error:', err);
+    res.status(500).json({ message: err.message || 'Registration failed' });
+  }
+});
+
+// ---------------- CONFIRM ----------------
+router.post('/confirm', async (req, res) => {
+  const { username, code } = req.body;
+  if (!username || !code) {
+    return res.status(400).json({ message: 'Username and confirmation code are required' });
+  }
+
+  try {
+    console.log(`Confirming email for user ${username}`);
+    await cognitoClient.send(new ConfirmSignUpCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      SecretHash: generateSecretHash(username),
+      Username: username,
+      ConfirmationCode: code
+    }));
+    res.json({ message: 'Email confirmed successfully' });
+  } catch (err) {
+    console.error('Cognito confirm error:', err);
+    res.status(500).json({ message: err.message || 'Confirmation failed' });
+  }
+});
+
+// ---------------- LOGIN ----------------
+router.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
+
+  try {
+    console.log(`Logging in user ${username}`);
+    const result = await cognitoClient.send(new InitiateAuthCommand({
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      AuthParameters: {
+        USERNAME: username,
+        PASSWORD: password,
+        SECRET_HASH: generateSecretHash(username)
+      }
+    }));
+
+    if (result.ChallengeName === 'SOFTWARE_TOKEN_MFA') {
+      return res.json({
+        message: 'MFA required',
+        challengeName: result.ChallengeName,
+        session: result.Session
+      });
+    }
+
+    res.json({
+      message: 'Login successful',
+      idToken: result.AuthenticationResult.IdToken,
+      accessToken: result.AuthenticationResult.AccessToken,
+      refreshToken: result.AuthenticationResult.RefreshToken
+    });
+  } catch (err) {
+    console.error('Cognito login error:', err);
+    res.status(401).json({ message: err.message || 'Login failed' });
+  }
+});
+
+// ---------------- MFA SETUP (Generate QR Secret) ----------------
+router.post('/mfa/setup', async (req, res) => {
+  const { accessToken } = req.body;
+  if (!accessToken) {
+    return res.status(400).json({ message: 'Access token is required' });
+  }
+
+  try {
+    const response = await cognitoClient.send(new AssociateSoftwareTokenCommand({
+      AccessToken: accessToken
+    }));
+
+    res.json({
+      message: 'MFA secret generated. Scan this QR code in Google Authenticator.',
+      secretCode: response.SecretCode
+    });
+  } catch (err) {
+    console.error('MFA setup error:', err);
+    res.status(500).json({ message: err.message || 'MFA setup failed' });
+  }
+});
+
+// ---------------- VERIFY MFA CODE ----------------
+router.post('/mfa/verify', async (req, res) => {
+  const { accessToken, code } = req.body;
+  if (!accessToken || !code) {
+    return res.status(400).json({ message: 'Access token and code are required' });
+  }
+
+  try {
+    const response = await cognitoClient.send(new VerifySoftwareTokenCommand({
+      AccessToken: accessToken,
+      UserCode: code,
+      FriendlyDeviceName: 'MyDevice'
+    }));
+
+    res.json({ message: 'MFA verified successfully', response });
+  } catch (err) {
+    console.error('MFA verify error:', err);
+    res.status(500).json({ message: err.message || 'MFA verification failed' });
+  }
+});
+
+// ---------------- MFA LOGIN CONFIRMATION ----------------
+router.post('/mfa/login', async (req, res) => {
+  const { username, code, session } = req.body;
+  if (!username || !code || !session) {
+    return res.status(400).json({ message: 'Username, code, and session are required' });
+  }
+
+  try {
+    const result = await cognitoClient.send(new RespondToAuthChallengeCommand({
+      ClientId: process.env.COGNITO_CLIENT_ID,
+      ChallengeName: 'SOFTWARE_TOKEN_MFA',
+      Session: session,
+      ChallengeResponses: {
+        USERNAME: username,
+        SOFTWARE_TOKEN_MFA_CODE: code,
+        SECRET_HASH: generateSecretHash(username)
+      }
+    }));
+
+    res.json({
+      message: 'MFA login successful',
+      idToken: result.AuthenticationResult.IdToken,
+      accessToken: result.AuthenticationResult.AccessToken,
+      refreshToken: result.AuthenticationResult.RefreshToken
+    });
+  } catch (err) {
+    console.error('MFA login error:', err);
+    res.status(401).json({ message: err.message || 'MFA login failed' });
   }
 });
 
