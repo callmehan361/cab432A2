@@ -75,13 +75,15 @@ router.post('/login', async (req, res) => {
 
   try {
     console.log(`Logging in user ${username}`);
+    console.log(process.env.COGNITO_CLIENT_SECRET);
     const result = await cognitoClient.send(new InitiateAuthCommand({
       AuthFlow: 'USER_PASSWORD_AUTH',
       ClientId: process.env.COGNITO_CLIENT_ID,
+      SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined,
       AuthParameters: {
         USERNAME: username,
         PASSWORD: password,
-        SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined
+        //SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined
         //SecretHash: SecretHash(process.env.COGNITO_CLIENT_ID, process.env.COGNITO_CLIENT_SECRET, username)
       }
     }));
