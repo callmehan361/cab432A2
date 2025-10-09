@@ -76,7 +76,9 @@ async function updateJobStatus(jobId, status, outputKey = null) {
 
 // Upload + Transcode
 router.post('/upload', authMiddleware, upload.single("video"), async (req, res) => {
-  console.log(req.body);
+
+  console.log(req.file);
+  
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
   const jobId = uuidv4();
@@ -84,6 +86,7 @@ router.post('/upload', authMiddleware, upload.single("video"), async (req, res) 
   const outputKey = `outputs/${jobId}.mp4`;
 
   console.log(req.file.path);
+
   try {
     console.log(`Uploading video to S3: ${inputKey} in bucket ${process.env.S3_BUCKET}`);
     // Upload input video to S3
