@@ -75,6 +75,7 @@ async function updateJobStatus(jobId, status, outputKey = null) {
 // Upload + Transcode
 router.post('/upload', authMiddleware, upload.single('video'), async (req, res) => {
   console.log("wdoiwn");
+  console.log(req.file);
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
   const jobId = uuidv4();

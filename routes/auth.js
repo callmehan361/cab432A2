@@ -93,6 +93,7 @@ router.post('/login', async (req, res) => {
       accessToken: result.AuthenticationResult.AccessToken,
       refreshToken: result.AuthenticationResult.RefreshToken
     });
+    console.log(idToken)
   } catch (err) {
     console.error('Cognito login error:', err);
     res.status(401).json({ message: err.message || 'Login failed' });
