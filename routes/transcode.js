@@ -26,21 +26,9 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  
-  /*
-    storage: multerS3({
-    s3: s3Client,
-    bucket: process.env.S3_BUCKET,
-    metadata: (req, file, cb) => cb(null, { fieldName: file.fieldname }),
-    key: (req, file, cb) =>  cb(null, `uploads/${Date.now()}-${file.originalname}`)
-  }),
-  */
-
   fileFilter: (req, file, cb) => {
-    //const allowedTypes = ['audio/mp4','video/mp4', 'video/mpeg', 'video/quicktime', 'video/mov'];
-    const allowedTypes = ['video/', 'audio/'];
-    if (!file.mimetype.startsWith('video/') && !file.mimetype.startsWith('audio/')) {
-    //if (!allowedTypes.includes(file.mimetype)) {
+    const allowedTypes = ['video/quicktime', 'video/mp4', 'video/mpeg', 'video/mov'];
+    if (!allowedTypes.includes(file.mimetype)) {
       return cb(new Error('Only MP4, MPEG, MOV, or QuickTime videos allowed'));
     }
     cb(null, true);
@@ -85,17 +73,23 @@ async function updateJobStatus(jobId, status, outputKey = null) {
 }
 
 // Upload + Transcode
-router.post('/upload', authMiddleware, upload.single("video"), async (req, res) => {
+router.post('/upload', authMiddleware, upload.single('video'), async (req, res) => {
+  console.log('Received file:', req.file);
+  if (!req.file) {
+    return res.status(400).json({ message: 'No file uploaded' });
+  }
 
-  console.log(req.file);
-
-  if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+  // Validate file size
+  const fileStats = await fs.stat(req.file.path);
+  console.log(`Input file size: ${fileStats.size} bytes`);
+  if (fileStats.size === 0) {
+    await fs.unlink(req.file.path).catch(() => {});
+    return res.status(400).json({ message: 'Uploaded file is empty' });
+  }
 
   const jobId = uuidv4();
   const inputKey = `uploads/${jobId}-${req.file.originalname}`;
   const outputKey = `outputs/${jobId}.mp4`;
-
-  console.log(req.file.path);
 
   try {
     console.log(`Uploading video to S3: ${inputKey} in bucket ${process.env.S3_BUCKET}`);
@@ -115,24 +109,32 @@ router.post('/upload', authMiddleware, upload.single("video"), async (req, res) 
     };
     await createJob(job);
 
-    // Transcode (write to /tmp/ and upload to S3)
+    // Transcode to MP4 (H.264/AAC)
+    console.log(`Starting FFmpeg transcoding for job ${jobId}`);
     ffmpeg(req.file.path)
+      .videoCodec('libx264') // Explicit H.264
+      .audioCodec('aac') // Explicit AAC
       .outputOptions(['-preset veryslow', '-crf 28'])
       .output(path.join('/tmp/', `${jobId}.mp4`))
+      .on('start', (commandLine) => {
+        console.log(`FFmpeg command: ${commandLine}`);
+      })
       .on('end', async () => {
         try {
+          const outputStats = await fs.stat(path.join('/tmp/', `${jobId}.mp4`));
+          console.log(`Transcoded file size: ${outputStats.size} bytes`);
+          if (outputStats.size === 0) {
+            throw new Error('Transcoded file is empty');
+          }
+
           console.log(`Uploading transcoded video to S3: ${outputKey}`);
-          // Upload transcoded video to S3
           await s3Client.send(new PutObjectCommand({
             Bucket: process.env.S3_BUCKET,
             Key: outputKey,
             Body: await fs.readFile(path.join('/tmp/', `${jobId}.mp4`))
           }));
 
-          // Update job status
           await updateJobStatus(jobId, 'completed', outputKey);
-
-          // Clean up temporary files
           await fs.unlink(req.file.path).catch(() => {});
           await fs.unlink(path.join('/tmp/', `${jobId}.mp4`)).catch(() => {});
           console.log(`Job ${jobId} completed successfully`);
@@ -195,7 +197,7 @@ router.get('/video/:jobId', authMiddleware, async (req, res) => {
     const url = await getSignedUrl(s3Client, new GetObjectCommand({
       Bucket: process.env.S3_BUCKET,
       Key: result.Item.outputKey
-    }), { expiresIn: 3600 }); // 1 hour
+    }), { expiresIn: 3600 });
     res.json({ url });
   } catch (err) {
     console.error(`S3 getSignedUrl error for job ${req.params.jobId}:`, err);
