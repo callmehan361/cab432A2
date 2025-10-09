@@ -27,9 +27,9 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['video/mp4', 'video/mpeg', 'video/quicktime', 'video/mov'];
+    const allowedTypes = ['audio/mp4', 'video/mp4', 'video/mpeg', 'video/quicktime', 'video/mov'];
     if (!allowedTypes.includes(file.mimetype)) {
-      return cb(new Error('Only MP4, MPEG, or QuickTime videos allowed'));
+      return cb(new Error('Only MP4, MPEG, MOV, or QuickTime videos allowed'));
     }
     cb(null, true);
   },
@@ -74,7 +74,6 @@ async function updateJobStatus(jobId, status, outputKey = null) {
 
 // Upload + Transcode
 router.post('/upload', authMiddleware, upload.single("video"), async (req, res) => {
-  console.log("wdoiwn");
   console.log(req.body);
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
