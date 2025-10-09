@@ -3,7 +3,7 @@ const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 const { v4: uuidv4 } = require('uuid');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } = require('@aws-sdk/lib-dynamodb');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -26,15 +26,27 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ['video/quicktime', 'video/mp4', 'video/mpeg', 'video/mov'];
-    if (!allowedTypes.includes(file.mimetype)) {
-      return cb(new Error('Only MP4, MPEG, MOV, or QuickTime videos allowed'));
-    }
-    cb(null, true);
-  },
+  
   limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
+
+// Helper: Validate video file using FFmpeg
+async function validateVideo(filePath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        console.error('FFmpeg ffprobe error:', err);
+        return reject(new Error('Invalid or unsupported video file'));
+      }
+      const hasVideo = metadata.streams.some(stream => stream.codec_type === 'video');
+      if (!hasVideo) {
+        return reject(new Error('File contains no video streams'));
+      }
+      console.log('Video metadata:', metadata);
+      resolve(true);
+    });
+  });
+}
 
 // Helper: Create job in DynamoDB
 async function createJob(job) {
@@ -81,10 +93,19 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
 
   // Validate file size
   const fileStats = await fs.stat(req.file.path);
-  console.log(`Input file size: ${fileStats.size} bytes`);
+  console.log(`Input file: ${req.file.path}, Size: ${fileStats.size} bytes, MIME: ${req.file.mimetype}`);
   if (fileStats.size === 0) {
     await fs.unlink(req.file.path).catch(() => {});
     return res.status(400).json({ message: 'Uploaded file is empty' });
+  }
+
+  // Validate video file
+  try {
+    await validateVideo(req.file.path);
+  } catch (err) {
+    await fs.unlink(req.file.path).catch(() => {});
+    console.error('Video validation error:', err);
+    return res.status(400).json({ message: err.message });
   }
 
   const jobId = uuidv4();
@@ -112,17 +133,20 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
     // Transcode to MP4 (H.264/AAC)
     console.log(`Starting FFmpeg transcoding for job ${jobId}`);
     ffmpeg(req.file.path)
-      .videoCodec('libx264') // Explicit H.264
-      .audioCodec('aac') // Explicit AAC
+      .videoCodec('libx264')
+      .audioCodec('aac')
       .outputOptions(['-preset veryslow', '-crf 28'])
       .output(path.join('/tmp/', `${jobId}.mp4`))
       .on('start', (commandLine) => {
         console.log(`FFmpeg command: ${commandLine}`);
       })
+      .on('progress', (progress) => {
+        console.log(`Transcoding progress for job ${jobId}: ${progress.percent}%`);
+      })
       .on('end', async () => {
         try {
           const outputStats = await fs.stat(path.join('/tmp/', `${jobId}.mp4`));
-          console.log(`Transcoded file size: ${outputStats.size} bytes`);
+          console.log(`Transcoded file: ${path.join('/tmp/', `${jobId}.mp4`)}, Size: ${outputStats.size} bytes`);
           if (outputStats.size === 0) {
             throw new Error('Transcoded file is empty');
           }
@@ -179,11 +203,11 @@ router.get('/status/:id', authMiddleware, async (req, res) => {
 });
 
 // Get pre-signed URL for video
-router.get('/video/:jobId', authMiddleware, async (req, res) => {
+router.get('/video/:id', authMiddleware, async (req, res) => {
   try {
     const result = await docClient.send(new GetCommand({
       TableName: process.env.JOBS_TABLE,
-      Key: { id: req.params.jobId }
+      Key: { id: req.params.id }
     }));
 
     if (!result.Item || result.Item.user !== req.user.username) {
@@ -200,7 +224,7 @@ router.get('/video/:jobId', authMiddleware, async (req, res) => {
     }), { expiresIn: 3600 });
     res.json({ url });
   } catch (err) {
-    console.error(`S3 getSignedUrl error for job ${req.params.jobId}:`, err);
+    console.error(`S3 getSignedUrl error for job ${req.params.id}:`, err);
     res.status(500).json({ message: 'Server error' });
   }
 });
