@@ -12,7 +12,7 @@ const router = express.Router();
 const jobsFile = path.join(__dirname, '../models/jobs.json');
 
 // Ensure directories exist
-const uploadsDir = path.join(__dirname, '../uploads');
+const uploadsDir = path.join(__dirname, '../Uploads');
 const outputsDir = path.join(__dirname, '../outputs');
 const ensureDirectories = async () => {
   try {
@@ -78,7 +78,9 @@ async function validateVideo(filePath) {
 
 // Upload + Transcode
 router.post('/upload', authMiddleware, upload.single('video'), async (req, res) => {
-  console.log('Upload request received, file:', req.file);
+  console.log('Upload request headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Upload request body:', req.body);
+  console.log('Upload request file:', req.file);
   if (!req.file) {
     console.log('No file received in upload request');
     return res.status(400).json({ message: 'No file uploaded' });
