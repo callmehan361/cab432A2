@@ -217,9 +217,9 @@ const crypto = require('crypto');
 const router = express.Router();
 
 // Configuration (replace with your values from AWS Console)
-const clientId = ''; // Your Cognito App Client ID
-const clientSecret = ''; // Your Cognito App Client Secret
-const userPoolId = ''; // Your Cognito User Pool ID
+const clientId = '1jhh3ii265m4l4cuvh98vd744n'; // Your Cognito App Client ID
+const clientSecret = '1lj1pnnm7p718qbr48kd4ehksp5f9jps6u381p7b6ok6k6vrrsua'; // Your Cognito App Client Secret
+const userPoolId = 'ap-southeast-2_2ovFsHYzd'; // Your Cognito User Pool ID
 const region = 'ap-southeast-2';
 
 // Initialize Cognito client
