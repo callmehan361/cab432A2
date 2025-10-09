@@ -83,6 +83,7 @@ router.post('/upload', authMiddleware, upload.single("video"), async (req, res) 
   const inputKey = `uploads/${jobId}-${req.file.originalname}`;
   const outputKey = `outputs/${jobId}.mp4`;
 
+  console.log(req.file.path);
   try {
     console.log(`Uploading video to S3: ${inputKey} in bucket ${process.env.S3_BUCKET}`);
     // Upload input video to S3
