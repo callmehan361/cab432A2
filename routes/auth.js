@@ -104,6 +104,9 @@ module.exports = router;
 */
 
 const express = require('express');
+const { SetUserMFAPreferenceCommand } = require('@aws-sdk/client-cognito-identity-provider');
+
+
 const { 
   CognitoIdentityProviderClient, 
   SignUpCommand, 
@@ -244,13 +247,26 @@ router.post('/mfa/verify', async (req, res) => {
   }
 
   try {
-    const response = await cognitoClient.send(new VerifySoftwareTokenCommand({
+    const verifyResponse = await cognitoClient.send(new VerifySoftwareTokenCommand({
       AccessToken: accessToken,
       UserCode: code,
       FriendlyDeviceName: 'MyDevice'
     }));
 
-    res.json({ message: 'MFA verified successfully', response });
+    if (verifyResponse.Status !== 'SUCCESS') {
+      throw new Error('MFA verification failed');
+    }
+
+    // Enable MFA preference for the user
+    await cognitoClient.send(new SetUserMFAPreferenceCommand({
+      AccessToken: accessToken,
+      SoftwareTokenMfaSettings: {
+        Enabled: true,
+        PreferredMfa: true
+      }
+    }));
+
+    res.json({ message: 'MFA verified and enabled successfully', response: verifyResponse });
   } catch (err) {
     console.error('MFA verify error:', err);
     res.status(500).json({ message: err.message || 'MFA verification failed' });
