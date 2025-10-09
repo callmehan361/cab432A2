@@ -3,30 +3,58 @@ const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 const { v4: uuidv4 } = require('uuid');
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand } = require('@aws-sdk/lib-dynamodb');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs').promises;
 const path = require('path');
 const authMiddleware = require('../middleware/authMiddleware');
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 const router = express.Router();
+const jobsFile = path.join(__dirname, '../models/jobs.json');
 
-// Configure AWS
-const s3Client = new S3Client({ region: process.env.AWS_REGION });
-const dynamoDBClient = new DynamoDBClient({ region: process.env.AWS_REGION });
-const docClient = DynamoDBDocumentClient.from(dynamoDBClient);
+// Ensure directories exist
+const uploadsDir = path.join(__dirname, '../uploads');
+const outputsDir = path.join(__dirname, '../outputs');
+const ensureDirectories = async () => {
+  try {
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.mkdir(outputsDir, { recursive: true });
+    console.log('Directories ensured: Uploads, outputs');
+  } catch (err) {
+    console.error('Error creating directories:', err);
+    throw err;
+  }
+};
 
-// File upload storage (temporary on EC2)
+// Ensure jobs.json exists
+const ensureJobsFile = async () => {
+  try {
+    await fs.access(jobsFile);
+  } catch {
+    await fs.writeFile(jobsFile, JSON.stringify([], null, 2));
+    console.log('Created jobs.json');
+  }
+};
+
+// File upload storage
 const storage = multer.diskStorage({
-  destination: '/tmp/',
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  destination: async (req, file, cb) => {
+    try {
+      await ensureDirectories();
+      console.log('Multer destination: Uploads');
+      cb(null, uploadsDir);
+    } catch (err) {
+      console.error('Multer destination error:', err);
+      cb(err);
+    }
+  },
+  filename: (req, file, cb) => {
+    const filename = `${Date.now()}-${file.originalname}`;
+    console.log(`Multer saving file as: ${filename}`);
+    cb(null, filename);
+  }
 });
 const upload = multer({
   storage,
-  
   limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
 
@@ -42,52 +70,17 @@ async function validateVideo(filePath) {
       if (!hasVideo) {
         return reject(new Error('File contains no video streams'));
       }
-      console.log('Video metadata:', metadata);
+      console.log('Video metadata:', JSON.stringify(metadata, null, 2));
       resolve(true);
     });
   });
 }
 
-// Helper: Create job in DynamoDB
-async function createJob(job) {
-  try {
-    console.log(`Creating job ${job.id} for user ${job.user} in table ${process.env.JOBS_TABLE}`);
-    await docClient.send(new PutCommand({
-      TableName: process.env.JOBS_TABLE,
-      Item: job
-    }));
-  } catch (err) {
-    console.error('DynamoDB createJob error:', err);
-    throw err;
-  }
-}
-
-// Helper: Update job status in DynamoDB
-async function updateJobStatus(jobId, status, outputKey = null) {
-  try {
-    console.log(`Updating job ${jobId} to status ${status}`);
-    const params = {
-      TableName: process.env.JOBS_TABLE,
-      Key: { id: jobId },
-      UpdateExpression: outputKey
-        ? 'SET #status = :status, outputKey = :outputKey'
-        : 'SET #status = :status',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: outputKey
-        ? { ':status': status, ':outputKey': outputKey }
-        : { ':status': status }
-    };
-    await docClient.send(new UpdateCommand(params));
-  } catch (err) {
-    console.error('DynamoDB updateJobStatus error:', err);
-    throw err;
-  }
-}
-
 // Upload + Transcode
 router.post('/upload', authMiddleware, upload.single('video'), async (req, res) => {
-  console.log('Received file:', req.file);
+  console.log('Upload request received, file:', req.file);
   if (!req.file) {
+    console.log('No file received in upload request');
     return res.status(400).json({ message: 'No file uploaded' });
   }
 
@@ -109,122 +102,75 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
   }
 
   const jobId = uuidv4();
-  const inputKey = `uploads/${jobId}-${req.file.originalname}`;
-  const outputKey = `outputs/${jobId}.mp4`;
+  const outputFile = path.join(outputsDir, `${jobId}.mp4`);
 
-  try {
-    console.log(`Uploading video to S3: ${inputKey} in bucket ${process.env.S3_BUCKET}`);
-    // Upload input video to S3
-    await s3Client.send(new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET,
-      Key: inputKey,
-      Body: await fs.readFile(req.file.path)
-    }));
+  // Store job metadata
+  await ensureJobsFile();
+  const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+  jobs.push({ id: jobId, user: req.user.username, status: 'processing', input: req.file.path });
+  await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
 
-    // Store job metadata in DynamoDB
-    const job = {
-      id: jobId,
-      user: req.user.username,
-      status: 'processing',
-      inputKey
-    };
-    await createJob(job);
-
-    // Transcode to MP4 (H.264/AAC)
-    console.log(`Starting FFmpeg transcoding for job ${jobId}`);
-    ffmpeg(req.file.path)
-      .videoCodec('libx264')
-      .audioCodec('aac')
-      .outputOptions(['-preset veryslow', '-crf 28'])
-      .output(path.join('/tmp/', `${jobId}.mp4`))
-      .on('start', (commandLine) => {
-        console.log(`FFmpeg command: ${commandLine}`);
-      })
-      .on('progress', (progress) => {
-        console.log(`Transcoding progress for job ${jobId}: ${progress.percent}%`);
-      })
-      .on('end', async () => {
-        try {
-          const outputStats = await fs.stat(path.join('/tmp/', `${jobId}.mp4`));
-          console.log(`Transcoded file: ${path.join('/tmp/', `${jobId}.mp4`)}, Size: ${outputStats.size} bytes`);
-          if (outputStats.size === 0) {
-            throw new Error('Transcoded file is empty');
-          }
-
-          console.log(`Uploading transcoded video to S3: ${outputKey}`);
-          await s3Client.send(new PutObjectCommand({
-            Bucket: process.env.S3_BUCKET,
-            Key: outputKey,
-            Body: await fs.readFile(path.join('/tmp/', `${jobId}.mp4`))
-          }));
-
-          await updateJobStatus(jobId, 'completed', outputKey);
-          await fs.unlink(req.file.path).catch(() => {});
-          await fs.unlink(path.join('/tmp/', `${jobId}.mp4`)).catch(() => {});
-          console.log(`Job ${jobId} completed successfully`);
-        } catch (err) {
-          await updateJobStatus(jobId, 'failed');
-          await fs.unlink(req.file.path).catch(() => {});
-          await fs.unlink(path.join('/tmp/', `${jobId}.mp4`)).catch(() => {});
-          console.error(`Transcoding error for job ${jobId}:`, err);
+  // Transcode to MP4 (H.264/AAC)
+  console.log(`Starting FFmpeg transcoding for job ${jobId}`);
+  ffmpeg(req.file.path)
+    .videoCodec('libx264')
+    .audioCodec('aac')
+    .outputOptions(['-preset veryslow', '-crf 28'])
+    .output(outputFile)
+    .on('start', (commandLine) => {
+      console.log(`FFmpeg command: ${commandLine}`);
+    })
+    .on('progress', (progress) => {
+      console.log(`Transcoding progress for job ${jobId}: ${progress.percent}%`);
+    })
+    .on('end', async () => {
+      try {
+        const outputStats = await fs.stat(outputFile);
+        console.log(`Transcoded file: ${outputFile}, Size: ${outputStats.size} bytes`);
+        if (outputStats.size === 0) {
+          throw new Error('Transcoded file is empty');
         }
-      })
-      .on('error', async (err) => {
-        await updateJobStatus(jobId, 'failed');
-        await fs.unlink(req.file.path).catch(() => {});
-        console.error(`FFmpeg error for job ${jobId}:`, err);
-      })
-      .run();
 
-    res.json({ message: 'Transcoding started', jobId });
-  } catch (err) {
-    await fs.unlink(req.file.path).catch(() => {});
-    console.error(`Server error for job ${jobId}:`, err);
-    res.status(500).json({ message: 'Server error' });
-  }
+        const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+        const job = jobs.find(j => j.id === jobId);
+        job.status = 'completed';
+        job.output = outputFile;
+        await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
+        await fs.unlink(req.file.path).catch(() => {});
+        console.log(`Job ${jobId} completed successfully`);
+      } catch (err) {
+        const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+        const job = jobs.find(j => j.id === jobId);
+        job.status = 'failed';
+        await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
+        await fs.unlink(req.file.path).catch(() => {});
+        console.error(`Transcoding error for job ${jobId}:`, err);
+      }
+    })
+    .on('error', async (err) => {
+      const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+      const job = jobs.find(j => j.id === jobId);
+      job.status = 'failed';
+      await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
+      await fs.unlink(req.file.path).catch(() => {});
+      console.error(`FFmpeg error for job ${jobId}:`, err);
+    })
+    .run();
+
+  res.json({ message: 'Transcoding started', jobId });
 });
 
 // Job status
 router.get('/status/:id', authMiddleware, async (req, res) => {
   try {
-    const result = await docClient.send(new GetCommand({
-      TableName: process.env.JOBS_TABLE,
-      Key: { id: req.params.id }
-    }));
-
-    if (!result.Item || result.Item.user !== req.user.username) {
+    const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+    const job = jobs.find(j => j.id === req.params.id);
+    if (!job || job.user !== req.user.username) {
       return res.status(404).json({ message: 'Job not found or unauthorized' });
     }
-    res.json(result.Item);
+    res.json(job);
   } catch (err) {
-    console.error(`DynamoDB get error for job ${req.params.id}:`, err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// Get pre-signed URL for video
-router.get('/video/:id', authMiddleware, async (req, res) => {
-  try {
-    const result = await docClient.send(new GetCommand({
-      TableName: process.env.JOBS_TABLE,
-      Key: { id: req.params.id }
-    }));
-
-    if (!result.Item || result.Item.user !== req.user.username) {
-      return res.status(403).json({ message: 'Unauthorized or job not found' });
-    }
-    if (result.Item.status !== 'completed' || !result.Item.outputKey) {
-      return res.status(400).json({ message: 'Video not ready' });
-    }
-
-    console.log(`Generating pre-signed URL for ${result.Item.outputKey}`);
-    const url = await getSignedUrl(s3Client, new GetObjectCommand({
-      Bucket: process.env.S3_BUCKET,
-      Key: result.Item.outputKey
-    }), { expiresIn: 3600 });
-    res.json({ url });
-  } catch (err) {
-    console.error(`S3 getSignedUrl error for job ${req.params.id}:`, err);
+    console.error(`Error reading jobs file for job ${req.params.id}:`, err);
     res.status(500).json({ message: 'Server error' });
   }
 });
