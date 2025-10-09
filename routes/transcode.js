@@ -25,12 +25,16 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({
-  storage: multerS3({
+  storage,
+  
+  /*
+    storage: multerS3({
     s3: s3Client,
     bucket: process.env.S3_BUCKET,
     metadata: (req, file, cb) => cb(null, { fieldName: file.fieldname }),
     key: (req, file, cb) =>  cb(null, `uploads/${Date.now()}-${file.originalname}`)
   }),
+  */
 
   fileFilter: (req, file, cb) => {
     //const allowedTypes = ['audio/mp4','video/mp4', 'video/mpeg', 'video/quicktime', 'video/mov'];
