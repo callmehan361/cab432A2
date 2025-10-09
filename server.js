@@ -21,19 +21,12 @@ app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 */
 
 const express = require('express');
-const auth = require('./routes/auth');
-const transcode = require('./routes/transcode');
-
+const { router: authRouter } = require('./routes/auth');
+const transcodeRouter = require('./routes/transcode');
 const app = express();
 
-// Middleware to parse JSON bodies
 app.use(express.json());
+app.use('/api/auth', authRouter);
+app.use('/api/transcode', transcodeRouter);
 
-// Routes
-app.use('/api/auth', auth.router); // Use the router from auth.js
-app.use('/api/transcode', transcode); // transcode.js exports the router directly
-
-// Start server
-app.listen(5000, () => {
-  console.log('Server running on port 5000');
-});
+app.listen(5000, () => console.log('Server running on port 5000'));
