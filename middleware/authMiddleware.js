@@ -2,22 +2,20 @@ const { CognitoJwtVerifier } = require('aws-jwt-verify');
 
 const verifier = CognitoJwtVerifier.create({
   userPoolId: process.env.COGNITO_USER_POOL_ID,
-  clientId: process.env.COGNITO_CLIENT_ID,
-  tokenUse: 'id'
+  tokenUse: 'id', // Verify idToken (not accessToken)
+  clientId: process.env.COGNITO_CLIENT_ID
 });
 
 module.exports = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Missing or invalid Authorization header' });
-  }
-
-  const token = authHeader.split(' ')[1];
-
   try {
-    console.log(`Verifying JWT for user`);
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'No or invalid Authorization header' });
+    }
+    const token = authHeader.split(' ')[1]; // Extract token after 'Bearer '
+    console.log('Verifying JWT for user:', token); // Debug log
     const payload = await verifier.verify(token);
-    req.user = { username: payload['cognito:username'] };
+    req.user = payload; // Attach user data to request
     next();
   } catch (err) {
     console.error('JWT verification error:', err);
