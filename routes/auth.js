@@ -104,17 +104,11 @@ module.exports = router;
 */
 
 const express = require('express');
-const { SetUserMFAPreferenceCommand } = require('@aws-sdk/client-cognito-identity-provider');
-
-
 const { 
   CognitoIdentityProviderClient, 
   SignUpCommand, 
   ConfirmSignUpCommand, 
-  InitiateAuthCommand,
-  AssociateSoftwareTokenCommand,
-  VerifySoftwareTokenCommand,
-  RespondToAuthChallengeCommand
+  InitiateAuthCommand
 } = require('@aws-sdk/client-cognito-identity-provider');
 
 const crypto = require('crypto');
@@ -133,13 +127,12 @@ function generateSecretHash(username) {
     .digest('base64');
 }
 
-// ---------------- REGISTER ----------------
+// REGISTER
 router.post('/register', async (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !email || !password) {
     return res.status(400).json({ message: 'Username, email, and password are required' });
   }
-
   try {
     console.log(`Registering user ${username} with email ${email}`);
     await cognitoClient.send(new SignUpCommand({
@@ -156,13 +149,12 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// ---------------- CONFIRM ----------------
+// CONFIRM
 router.post('/confirm', async (req, res) => {
   const { username, code } = req.body;
   if (!username || !code) {
     return res.status(400).json({ message: 'Username and confirmation code are required' });
   }
-
   try {
     console.log(`Confirming email for user ${username}`);
     await cognitoClient.send(new ConfirmSignUpCommand({
@@ -178,13 +170,12 @@ router.post('/confirm', async (req, res) => {
   }
 });
 
-// ---------------- LOGIN ----------------
+// LOGIN
 router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password are required' });
   }
-
   try {
     console.log(`Logging in user ${username}`);
     const result = await cognitoClient.send(new InitiateAuthCommand({
@@ -196,15 +187,6 @@ router.post('/login', async (req, res) => {
         SECRET_HASH: generateSecretHash(username)
       }
     }));
-
-    if (result.ChallengeName === 'SOFTWARE_TOKEN_MFA') {
-      return res.json({
-        message: 'MFA required',
-        challengeName: result.ChallengeName,
-        session: result.Session
-      });
-    }
-
     res.json({
       message: 'Login successful',
       idToken: result.AuthenticationResult.IdToken,
@@ -214,93 +196,6 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('Cognito login error:', err);
     res.status(401).json({ message: err.message || 'Login failed' });
-  }
-});
-
-// ---------------- MFA SETUP (Generate QR Secret) ----------------
-router.post('/mfa/setup', async (req, res) => {
-  const { accessToken } = req.body;
-  if (!accessToken) {
-    return res.status(400).json({ message: 'Access token is required' });
-  }
-
-  try {
-    const response = await cognitoClient.send(new AssociateSoftwareTokenCommand({
-      AccessToken: accessToken
-    }));
-
-    res.json({
-      message: 'MFA secret generated. Scan this QR code in Google Authenticator.',
-      secretCode: response.SecretCode
-    });
-  } catch (err) {
-    console.error('MFA setup error:', err);
-    res.status(500).json({ message: err.message || 'MFA setup failed' });
-  }
-});
-
-// ---------------- VERIFY MFA CODE ----------------
-router.post('/mfa/verify', async (req, res) => {
-  const { accessToken, code } = req.body;
-  if (!accessToken || !code) {
-    return res.status(400).json({ message: 'Access token and code are required' });
-  }
-
-  try {
-    const verifyResponse = await cognitoClient.send(new VerifySoftwareTokenCommand({
-      AccessToken: accessToken,
-      UserCode: code,
-      FriendlyDeviceName: 'MyDevice'
-    }));
-
-    if (verifyResponse.Status !== 'SUCCESS') {
-      throw new Error('MFA verification failed');
-    }
-
-    // Enable MFA preference for the user
-    await cognitoClient.send(new SetUserMFAPreferenceCommand({
-      AccessToken: accessToken,
-      SoftwareTokenMfaSettings: {
-        Enabled: true,
-        PreferredMfa: true
-      }
-    }));
-
-    res.json({ message: 'MFA verified and enabled successfully', response: verifyResponse });
-  } catch (err) {
-    console.error('MFA verify error:', err);
-    res.status(500).json({ message: err.message || 'MFA verification failed' });
-  }
-});
-
-// ---------------- MFA LOGIN CONFIRMATION ----------------
-router.post('/mfa/login', async (req, res) => {
-  const { username, code, session } = req.body;
-  if (!username || !code || !session) {
-    return res.status(400).json({ message: 'Username, code, and session are required' });
-  }
-
-  try {
-    const result = await cognitoClient.send(new RespondToAuthChallengeCommand({
-      ClientId: process.env.COGNITO_CLIENT_ID,
-      ChallengeName: 'SOFTWARE_TOKEN_MFA',
-      Session: session,
-      ChallengeResponses: {
-        USERNAME: username,
-        SOFTWARE_TOKEN_MFA_CODE: code,
-        SECRET_HASH: generateSecretHash(username)
-      }
-    }));
-
-    res.json({
-      message: 'MFA login successful',
-      idToken: result.AuthenticationResult.IdToken,
-      accessToken: result.AuthenticationResult.AccessToken,
-      refreshToken: result.AuthenticationResult.RefreshToken
-    });
-  } catch (err) {
-    console.error('MFA login error:', err);
-    res.status(401).json({ message: err.message || 'MFA login failed' });
   }
 });
 
