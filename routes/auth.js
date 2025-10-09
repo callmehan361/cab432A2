@@ -81,7 +81,8 @@ router.post('/login', async (req, res) => {
       AuthParameters: {
         USERNAME: username,
         PASSWORD: password,
-        SecretHash: SecretHash(process.env.COGNITO_CLIENT_ID, process.env.COGNITO_CLIENT_SECRET, username)
+        SecretHash: process.env.COGNITO_CLIENT_SECRET ? require('crypto').createHmac('sha256', process.env.COGNITO_CLIENT_SECRET).update(username + process.env.COGNITO_CLIENT_ID).digest('base64') : undefined
+        //SecretHash: SecretHash(process.env.COGNITO_CLIENT_ID, process.env.COGNITO_CLIENT_SECRET, username)
       }
     }));
     
