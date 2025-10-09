@@ -1,6 +1,7 @@
 const express = require('express');
 const { CognitoIdentityProviderClient, SignUpCommand, ConfirmSignUpCommand, InitiateAuthCommand } = require('@aws-sdk/client-cognito-identity-provider');
 
+const crypto = require('crypto');
 const router = express.Router();
 
 // Configure Cognito client
