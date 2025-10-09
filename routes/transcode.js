@@ -86,7 +86,7 @@ router.post('/upload', authMiddleware, upload.single('video'), async (req, res) 
 
   // Validate file size
   const fileStats = await fs.stat(req.file.path);
-  console.log(`Input file: ${req.file.path}, Size: ${fileStats.size} bytes, MIME: ${req.file.mimetype}`);
+  console.log(`Input file: ${req.file.path}, Size: ${fileStats.size} bytes, MIME: ${req.file.mimetype}, Original name: ${req.file.originalname}`);
   if (fileStats.size === 0) {
     await fs.unlink(req.file.path).catch(() => {});
     return res.status(400).json({ message: 'Uploaded file is empty' });
