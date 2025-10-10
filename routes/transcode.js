@@ -182,7 +182,7 @@ module.exports = router;
 
 */
 
-
+/*
 const express = require('express');
 const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
@@ -360,6 +360,144 @@ router.get('/status/:id', authMiddleware, async (req, res) => {
     res.json(job);
   } catch (err) {
     console.error(`Error fetching job ${req.params.id}:`, err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router;
+*/
+
+
+
+const express = require('express');
+const { v4: uuidv4 } = require('uuid');
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+const fs = require('fs').promises;
+const path = require('path');
+const authMiddleware = require('../middleware/authMiddleware');
+const {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  PutObjectAclCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  CreatePresignedPost
+} = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+ffmpeg.setFfmpegPath(ffmpegPath);
+const router = express.Router();
+
+const jobsFile = path.join(__dirname, '../models/jobs.json');
+const bucketName = 'n1234567-test';
+const region = 'ap-southeast-2';
+const s3Client = new S3Client({ region });
+
+// Ensure jobs.json exists
+async function ensureJobsFile() {
+  try {
+    await fs.access(jobsFile);
+  } catch {
+    await fs.writeFile(jobsFile, JSON.stringify([], null, 2));
+  }
+}
+
+// -------------------- GET PRESIGNED UPLOAD URL --------------------
+router.post('/presign-upload', authMiddleware, async (req, res) => {
+  try {
+    const key = `inputs/${uuidv4()}-${Date.now()}.mp4`;
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      ContentType: 'video/mp4'
+    });
+
+    const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    res.json({ uploadUrl: url, key });
+  } catch (err) {
+    console.error('Presign upload error:', err);
+    res.status(500).json({ message: 'Failed to generate presigned URL' });
+  }
+});
+
+// -------------------- START TRANSCODING --------------------
+router.post('/start', authMiddleware, async (req, res) => {
+  const { inputKey } = req.body;
+  if (!inputKey) {
+    return res.status(400).json({ message: 'inputKey is required' });
+  }
+
+  const jobId = uuidv4();
+  const outputKey = `outputs/${jobId}.mp4`;
+
+  await ensureJobsFile();
+  const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+  jobs.push({ id: jobId, user: req.user.username, status: 'processing', inputKey, outputKey });
+  await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
+
+  try {
+    // Step 1: Get S3 object stream
+    const inputCmd = new GetObjectCommand({ Bucket: bucketName, Key: inputKey });
+    const inputResponse = await s3Client.send(inputCmd);
+    const inputStream = inputResponse.Body;
+
+    // Step 2: Create PassThrough to upload transcoded output directly to S3
+    const { PassThrough } = require('stream');
+    const outputStream = new PassThrough();
+    const uploadPromise = s3Client.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: outputKey,
+        Body: outputStream,
+        ContentType: 'video/mp4'
+      })
+    );
+
+    // Step 3: Pipe FFmpeg directly from S3 → FFmpeg → S3
+    ffmpeg(inputStream)
+      .videoCodec('libx264')
+      .audioCodec('aac')
+      .outputOptions(['-preset veryslow', '-crf 28'])
+      .format('mp4')
+      .on('start', cmd => console.log(`FFmpeg: ${cmd}`))
+      .on('progress', p => console.log(`Job ${jobId}: ${p.percent?.toFixed(2)}%`))
+      .on('end', async () => {
+        console.log(`✅ Transcoding finished for ${jobId}`);
+        await uploadPromise;
+        const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+        const job = jobs.find(j => j.id === jobId);
+        job.status = 'completed';
+        await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
+      })
+      .on('error', async (err) => {
+        console.error(`❌ FFmpeg error ${jobId}:`, err);
+        const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+        const job = jobs.find(j => j.id === jobId);
+        job.status = 'failed';
+        await fs.writeFile(jobsFile, JSON.stringify(jobs, null, 2));
+      })
+      .pipe(outputStream, { end: true });
+
+    res.json({ message: 'Transcoding started', jobId });
+  } catch (err) {
+    console.error('Transcoding start error:', err);
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+});
+
+// -------------------- JOB STATUS --------------------
+router.get('/status/:id', authMiddleware, async (req, res) => {
+  try {
+    const jobs = JSON.parse(await fs.readFile(jobsFile, 'utf-8'));
+    const job = jobs.find(j => j.id === req.params.id);
+    if (!job || job.user !== req.user.username) {
+      return res.status(404).json({ message: 'Job not found or unauthorized' });
+    }
+    res.json(job);
+  } catch (err) {
+    console.error(`Status check failed for job ${req.params.id}:`, err);
     res.status(500).json({ message: 'Server error' });
   }
 });
