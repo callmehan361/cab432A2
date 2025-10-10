@@ -391,7 +391,7 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 const router = express.Router();
 
 const jobsFile = path.join(__dirname, '../models/jobs.json');
-const bucketName = 'n1234567-test';
+const bucketName = 'lahana2';
 const region = 'ap-southeast-2';
 const s3Client = new S3Client({ region });
 
